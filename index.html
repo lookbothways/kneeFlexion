@@ -93,10 +93,10 @@
     const TEXT_COLOR = "#FFFFFF";
 
     // Landmark Indices Maps
-    // Swapped: RIGHT uses odd numbers (23,25,27), LEFT uses even (24,26,28) because video is flipped
+    // Swapped because video is flipped
     const LEG_INDICES = {
-        RIGHT: { hip: 23, knee: 25, ankle: 27 },
-        LEFT:  { hip: 24, knee: 26, ankle: 28 }
+        LEFT: { hip: 23, knee: 25, ankle: 27 },
+        RIGHT:  { hip: 24, knee: 26, ankle: 28 }
     };
 
     // --- STATE VARIABLES ---
@@ -109,7 +109,7 @@
     let sessionMaxFlexion = 0;
     let sessionLogged = false;
 
-    let currentLeg = "RIGHT"; // Default
+    let currentLeg = "LEFT"; // Default
 
     // Buffers
     let hipBuffer = [];
@@ -357,7 +357,7 @@
         canvasCtx.fillText(`REPS: ${repsCompleted} / ${MAX_REPS}`, uiXOffset, 250);
 
         if (state === "FINISHED") {
-            canvasCtx.fillStyle = "#00FF00";
+            canvasCtx.fillStyle = "#FFFFFF";
             canvasCtx.font = "bold 40px Arial";
             canvasCtx.fillText("SESSION COMPLETE", uiXOffset, h / 2 + 80);
             if (!sessionLogged) {
