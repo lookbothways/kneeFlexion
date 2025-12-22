@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knee Flexion Trainer</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #222;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        /* Hide the raw video, we render to canvas */
+        video { display: none; }
+
+        canvas {
+            border: 2px solid #555;
+            background-color: #000;
+            max-width: 100%;
+        }
+
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background 0.2s;
+        }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+
+        /* Specific Button Colors */
+        button#btn-start { min-width: 150px; }
+        button#btn-download { background-color: #28a745; display: none; }
+        button#btn-toggle-leg { background-color: #17a2b8; } /* Teal */
+        button#btn-toggle-leg:hover { background-color: #138496; }
+
+        /* Status messages */
+        #status-loading {
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #333;
+            border-radius: 4px;
+            border: 1px solid #444;
+        }
+        .error {
+            color: #ff6b6b;
+            border-color: #ff6b6b !important;
+            background: #3d0000 !important;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Knee Flexion Web Trainer</h1>
+    <div id="status-loading">Loading AI Models... please wait.</div>
+
+    <div style="position: relative;">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <div class="controls">
+        <button id="btn-start" disabled>Start Camera</button>
+        <button id="btn-toggle-leg">Leg: Right</button>
+        <button id="btn-download">Download Session Log</button>
+    </div>
+
+<script type="module">
+    import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+    // --- CONFIGURATION ---
+    const BUFFER_SIZE = 8;
+    const TARGET_ANGLE = 90;
+    const HOLD_DURATION = 10;
+    const REST_DURATION = 5;
+    const MAX_REPS = 10;
+
+    const UI_BG_COLOR = "#808080";
+    const TEXT_COLOR = "#FFFFFF";
+
+    // Landmark Indices Maps
+    // Swapped: RIGHT uses odd numbers (23,25,27), LEFT uses even (24,26,28) because video is flipped
+    const LEG_INDICES = {
+        RIGHT: { hip: 23, knee: 25, ankle: 27 },
+        LEFT:  { hip: 24, knee: 26, ankle: 28 }
+    };
+
+    // --- STATE VARIABLES ---
+    let poseLandmarker = undefined;
+    let webcamRunning = false;
+    let lastVideoTime = -1;
+    let state = "WAITING";
+    let repsCompleted = 0;
+    let timerStart = 0;
+    let sessionMaxFlexion = 0;
+    let sessionLogged = false;
+
+    let currentLeg = "RIGHT"; // Default
+
+    // Buffers
+    let hipBuffer = [];
+    let kneeBuffer = [];
+    let ankleBuffer = [];
+    let angleBuffer = [];
+
+    // DOM Elements
+    const video = document.getElementById("webcam");
+    const canvasElement = document.getElementById("output_canvas");
+    const canvasCtx = canvasElement.getContext("2d");
+    const startBtn = document.getElementById("btn-start");
+    const toggleLegBtn = document.getElementById("btn-toggle-leg");
+    const downloadBtn = document.getElementById("btn-download");
+    const loadingMsg = document.getElementById("status-loading");
+
+    // --- SETUP MEDIAPIPE ---
+    const createPoseLandmarker = async () => {
+        try {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+            );
+
+            poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numPoses: 1
+            });
+
+            loadingMsg.style.display = "none";
+            startBtn.disabled = false;
+            console.log("Model loaded successfully");
+
+        } catch (error) {
+            console.error(error);
+            loadingMsg.textContent = "Error: " + error.message;
+            loadingMsg.className = "error";
+        }
+    };
+
+    createPoseLandmarker();
+
+    // --- MATH HELPERS ---
+    function calculateFlexion(a, b, c) {
+        let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+        let angle = Math.abs(radians * 180.0 / Math.PI);
+        if (angle > 180.0) angle = 360 - angle;
+        return Math.floor(Math.abs(180 - angle));
+    }
+
+    function getAveragePoint(buffer) {
+        if (buffer.length === 0) return null;
+        let sumX = 0, sumY = 0;
+        for (let p of buffer) { sumX += p.x; sumY += p.y; }
+        return { x: sumX / buffer.length, y: sumY / buffer.length };
+    }
+
+    function updateBuffer(buffer, point) {
+        buffer.push(point);
+        if (buffer.length > BUFFER_SIZE) buffer.shift();
+    }
+
+    // --- CONTROLS ---
+
+    // Toggle Leg Button
+    toggleLegBtn.addEventListener("click", () => {
+        if (currentLeg === "RIGHT") {
+            currentLeg = "LEFT";
+            toggleLegBtn.innerText = "Leg: Left";
+        } else {
+            currentLeg = "RIGHT";
+            toggleLegBtn.innerText = "Leg: Right";
+        }
+        // Clear buffers so the skeleton doesn't jump across screen
+        hipBuffer = [];
+        kneeBuffer = [];
+        ankleBuffer = [];
+        angleBuffer = [];
+    });
+
+    // Camera Button
+    function enableCam(event) {
+        if (!poseLandmarker) return;
+
+        if (webcamRunning === true) {
+            webcamRunning = false;
+            startBtn.innerText = "Start Camera";
+            startBtn.style.backgroundColor = "#007bff";
+            if(video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+        } else {
+            webcamRunning = true;
+            startBtn.innerText = "Stop Camera";
+            startBtn.style.backgroundColor = "#dc3545";
+
+            const constraints = { video: { width: 640, height: 480 } };
+
+            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+            }).catch((err) => {
+                console.error(err);
+                alert("Camera access denied. Please allow camera permissions.");
+                webcamRunning = false;
+                startBtn.innerText = "Start Camera";
+                startBtn.style.backgroundColor = "#007bff";
+            });
+        }
+    }
+    startBtn.addEventListener("click", enableCam);
+
+    // --- MAIN LOOP ---
+    async function predictWebcam() {
+        if (!webcamRunning) return;
+
+        if(canvasElement.width !== video.videoWidth * 2) {
+            canvasElement.width = video.videoWidth * 2;
+            canvasElement.height = video.videoHeight;
+        }
+
+        const w = video.videoWidth;
+        const h = video.videoHeight;
+        let startTimeMs = performance.now();
+
+        if (lastVideoTime !== video.currentTime) {
+            lastVideoTime = video.currentTime;
+            poseLandmarker.detectForVideo(video, startTimeMs, (result) => {
+                processFrame(result, w, h);
+            });
+        }
+
+        window.requestAnimationFrame(predictWebcam);
+    }
+
+    function processFrame(result, w, h) {
+        const currTime = Date.now() / 1000;
+
+        // 1. Draw Background
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+        // Mirror Video (Left side)
+        canvasCtx.translate(w, 0);
+        canvasCtx.scale(-1, 1);
+        if(video.srcObject) canvasCtx.drawImage(video, 0, 0, w, h);
+        canvasCtx.restore();
+
+        // UI Grey (Right side)
+        canvasCtx.fillStyle = UI_BG_COLOR;
+        canvasCtx.fillRect(w, 0, w, h);
+
+        let smoothAngle = 0;
+
+        // 2. Logic & Skeleton
+        if (result.landmarks && result.landmarks.length > 0) {
+            const lm = result.landmarks[0];
+
+            // Get Current Leg Indices
+            const idx = LEG_INDICES[currentLeg];
+
+            // Calc coords (Flipping X for mirror effect)
+            const rawHip = { x: (1 - lm[idx.hip].x) * w, y: lm[idx.hip].y * h };
+            const rawKnee = { x: (1 - lm[idx.knee].x) * w, y: lm[idx.knee].y * h };
+            const rawAnkle = { x: (1 - lm[idx.ankle].x) * w, y: lm[idx.ankle].y * h };
+
+            updateBuffer(hipBuffer, rawHip);
+            updateBuffer(kneeBuffer, rawKnee);
+            updateBuffer(ankleBuffer, rawAnkle);
+
+            const sHip = getAveragePoint(hipBuffer);
+            const sKnee = getAveragePoint(kneeBuffer);
+            const sAnkle = getAveragePoint(ankleBuffer);
+
+            // Only proceed if we have enough data to smooth
+            if (sHip && sKnee && sAnkle) {
+                const currentAngle = calculateFlexion(sHip, sKnee, sAnkle);
+
+                angleBuffer.push(currentAngle);
+                if (angleBuffer.length > BUFFER_SIZE) angleBuffer.shift();
+                smoothAngle = Math.floor(angleBuffer.reduce((a, b) => a + b, 0) / angleBuffer.length);
+
+                if (smoothAngle > sessionMaxFlexion) sessionMaxFlexion = smoothAngle;
+
+                // Draw Lines
+                canvasCtx.lineWidth = 3;
+                canvasCtx.strokeStyle = "white";
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(sHip.x, sHip.y);
+                canvasCtx.lineTo(sKnee.x, sKnee.y);
+                canvasCtx.lineTo(sAnkle.x, sAnkle.y);
+                canvasCtx.stroke();
+
+                canvasCtx.fillStyle = "#00FF00";
+                canvasCtx.beginPath();
+                canvasCtx.arc(sKnee.x, sKnee.y, 8, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+                // State Machine
+                if (state === "WAITING") {
+                    if (smoothAngle >= TARGET_ANGLE) {
+                        state = "HOLDING";
+                        timerStart = currTime;
+                    }
+                } else if (state === "HOLDING") {
+                    if (smoothAngle < TARGET_ANGLE) {
+                        state = "WAITING";
+                    } else {
+                        const elapsed = currTime - timerStart;
+                        const remaining = Math.max(0, HOLD_DURATION - Math.floor(elapsed));
+                        drawBigText(`HOLD: ${remaining}s`, w, h);
+                        if (elapsed >= HOLD_DURATION) {
+                            repsCompleted++;
+                            if (repsCompleted >= MAX_REPS) {
+                                state = "FINISHED";
+                            } else {
+                                state = "RESTING";
+                                timerStart = currTime;
+                            }
+                        }
+                    }
+                } else if (state === "RESTING") {
+                    const elapsed = currTime - timerStart;
+                    const remaining = Math.max(0, REST_DURATION - Math.floor(elapsed));
+                    drawBigText(`REST: ${remaining}s`, w, h);
+                    if (elapsed >= REST_DURATION) state = "WAITING";
+                }
+            }
+        }
+
+        // 3. UI Text
+        const uiXOffset = w + 40;
+        canvasCtx.fillStyle = TEXT_COLOR;
+        canvasCtx.font = "bold 30px Arial";
+        canvasCtx.fillText(`STATUS: ${state}`, uiXOffset, 60);
+
+        canvasCtx.font = "24px Arial";
+        canvasCtx.fillText(`LEG: ${currentLeg}`, uiXOffset, 100); // Added Leg Indicator
+        canvasCtx.fillText(`CURRENT FLEXION: ${smoothAngle} deg`, uiXOffset, 150);
+        canvasCtx.fillText(`SESSION MAX: ${sessionMaxFlexion} deg`, uiXOffset, 200);
+        canvasCtx.fillText(`REPS: ${repsCompleted} / ${MAX_REPS}`, uiXOffset, 250);
+
+        if (state === "FINISHED") {
+            canvasCtx.fillStyle = "#00FF00";
+            canvasCtx.font = "bold 40px Arial";
+            canvasCtx.fillText("SESSION COMPLETE", uiXOffset, h / 2 + 80);
+            if (!sessionLogged) {
+                sessionLogged = true;
+                downloadBtn.style.display = "block";
+            }
+        }
+    }
+
+    function drawBigText(text, w, h) {
+        const uiXOffset = w + 40;
+        const offset = Math.floor(h/2) + Math.floor(h/3);
+        canvasCtx.fillStyle = TEXT_COLOR;
+        canvasCtx.font = "bold 50px Arial";
+        canvasCtx.fillText(text, uiXOffset, offset);
+    }
+
+    // --- DOWNLOAD CSV ---
+    downloadBtn.addEventListener('click', () => {
+        const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const csvContent = "data:text/csv;charset=utf-8,Timestamp,Leg,Max_Flexion_Reached\n" + `${timestamp},${currentLeg},${sessionMaxFlexion} deg`;
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "knee_session_log.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    });
+</script>
+</body>
+</html>

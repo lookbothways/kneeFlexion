@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-import mediapipe as mp
+import mediapipe as mp # 0.10.21 recommended
 from collections import deque
 import time
 import datetime
@@ -167,7 +167,9 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5, mod
             elif current_state == STATE_RESTING:
                 elapsed = curr_time - timer_start
                 remaining = max(0, REST_DURATION - int(elapsed))
-                cv2.putText(canvas, f"REST: {remaining}s", (ui_x_offset, h // 2),
+                one_third = h // 3
+                offset = h // 2 + one_third
+                cv2.putText(canvas, f"REST: {remaining}s", (ui_x_offset, offset),
                             FONT, 1.5, TEXT_COLOR, 3, cv2.LINE_AA)
 
                 if elapsed >= REST_DURATION:
