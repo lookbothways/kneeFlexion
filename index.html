@@ -30,6 +30,16 @@
             gap: 10px;
         }
 
+        /* New class for the description text */
+        .description {
+            margin-top: 15px;
+            max-width: 600px;
+            text-align: center;
+            font-size: 16px;
+            color: #ddd;
+            line-height: 1.5;
+        }
+
         button {
             padding: 10px 20px;
             font-size: 16px;
@@ -65,8 +75,8 @@
 </head>
 <body>
 
-    <h1>Knee Flexion Web Trainer</h1>
-    <div id="status-loading">Loading AI Models... please wait.</div>
+    <h1>Knee Flexion session: 10x 10sec 90&deg;</h1>
+    <div id="status-loading">Loading... </div>
 
     <div style="position: relative;">
         <video id="webcam" autoplay playsinline></video>
@@ -75,9 +85,14 @@
 
     <div class="controls">
         <button id="btn-start" disabled>Start Camera</button>
-        <button id="btn-toggle-leg">Leg: Right</button>
+        <button id="btn-toggle-leg">Leg: Left</button>
         <button id="btn-download">Download Session Log</button>
     </div>
+
+
+    <p class="description">
+        Track knee flexibility for physio reps. Position yourself side-on to the camera in ample light, start the camera, bend the knee to reach 90&deg; and hold it to complete a rep.
+    </p>
 
 <script type="module">
     import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
@@ -347,10 +362,10 @@
         // 3. UI Text
         const uiXOffset = w + 40;
         canvasCtx.fillStyle = TEXT_COLOR;
-        canvasCtx.font = "bold 30px Arial";
+        canvasCtx.font = "bold 40px Arial";
         canvasCtx.fillText(`STATUS: ${state}`, uiXOffset, 60);
 
-        canvasCtx.font = "24px Arial";
+        canvasCtx.font = "36px Arial";
         canvasCtx.fillText(`LEG: ${currentLeg}`, uiXOffset, 100); // Added Leg Indicator
         canvasCtx.fillText(`CURRENT FLEXION: ${smoothAngle} deg`, uiXOffset, 150);
         canvasCtx.fillText(`SESSION MAX: ${sessionMaxFlexion} deg`, uiXOffset, 200);
