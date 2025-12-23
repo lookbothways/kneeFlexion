@@ -28,6 +28,8 @@
             margin-top: 15px;
             display: flex;
             gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
         }
 
         /* New class for the description text */
@@ -58,6 +60,27 @@
         button#btn-toggle-leg { background-color: #17a2b8; } /* Teal */
         button#btn-toggle-leg:hover { background-color: #138496; }
 
+        button#btn-set-angle { background-color: #6610f2; } /* Purple */
+        button#btn-set-angle:hover { background-color: #520dc2; }
+
+        /* Input styling */
+        #angle-controls {
+            align-items: center;
+            background: #333;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        #inp-target-angle {
+            font-size: 16px;
+            padding: 5px;
+            width: 70px;
+            border-radius: 3px;
+            border: 1px solid #555;
+            margin: 0 10px;
+            text-align: center;
+        }
+
         /* Status messages */
         #status-loading {
             margin-bottom: 10px;
@@ -75,7 +98,7 @@
 </head>
 <body>
 
-    <h1>Knee Flexion session: 10x 10sec 90&deg;</h1>
+    <h1 id="page-title">Knee Flexion session: 10x 10sec 90&deg;</h1>
     <div id="status-loading">Loading... </div>
 
     <div style="position: relative;">
@@ -83,23 +106,31 @@
         <canvas id="output_canvas"></canvas>
     </div>
 
+    <!-- Main Controls -->
     <div class="controls">
         <button id="btn-start" disabled>Start Camera</button>
         <button id="btn-toggle-leg">Leg: Left</button>
+        <button id="btn-set-angle">Target Angle</button>
         <button id="btn-download">Download Session Log</button>
     </div>
 
+    <!-- Hidden Angle Input -->
+    <div id="angle-controls" style="display: none;">
+        <label for="inp-target-angle">Target Angle (&deg;):</label>
+        <input type="number" id="inp-target-angle" value="90" min="10" max="175">
+        <button id="btn-confirm-angle" style="background-color: #28a745; padding: 5px 15px;">OK</button>
+    </div>
 
     <p class="description">
-        Track knee flexibility for physio reps. Position yourself side-on to the camera in ample light, start the camera, bend the knee to reach 90&deg; and hold it to complete a rep.
+        Track knee flexibility for physio reps. Position yourself side-on to the camera in ample light, start the camera, bend the knee to reach the target angle and hold it to complete a rep.
     </p>
 
 <script type="module">
     import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
     // --- CONFIGURATION ---
-    const BUFFER_SIZE = 8;
-    const TARGET_ANGLE = 90;
+    const BUFFER_SIZE = 3;
+    let targetAngle = 90;
     const HOLD_DURATION = 10;
     const REST_DURATION = 5;
     const MAX_REPS = 10;
@@ -121,7 +152,6 @@
     let state = "WAITING";
     let repsCompleted = 0;
     let timerStart = 0;
-    let sessionMaxFlexion = 0;
     let sessionLogged = false;
 
     let currentLeg = "LEFT"; // Default
@@ -140,6 +170,13 @@
     const toggleLegBtn = document.getElementById("btn-toggle-leg");
     const downloadBtn = document.getElementById("btn-download");
     const loadingMsg = document.getElementById("status-loading");
+    const pageTitle = document.getElementById("page-title");
+
+    // Angle Input Elements
+    const setAngleBtn = document.getElementById("btn-set-angle");
+    const angleControls = document.getElementById("angle-controls");
+    const inpTargetAngle = document.getElementById("inp-target-angle");
+    const confirmAngleBtn = document.getElementById("btn-confirm-angle");
 
     // --- SETUP MEDIAPIPE ---
     const createPoseLandmarker = async () => {
@@ -150,7 +187,7 @@
 
             poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
                 baseOptions: {
-                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
                     delegate: "GPU"
                 },
                 runningMode: "VIDEO",
@@ -206,6 +243,30 @@
         kneeBuffer = [];
         ankleBuffer = [];
         angleBuffer = [];
+    });
+
+    // Angle Configuration
+    setAngleBtn.addEventListener("click", () => {
+        // Toggle visibility of the input field
+        if (angleControls.style.display === "none") {
+            angleControls.style.display = "flex";
+            inpTargetAngle.value = targetAngle;
+            inpTargetAngle.focus();
+        } else {
+            angleControls.style.display = "none";
+        }
+    });
+
+    confirmAngleBtn.addEventListener("click", () => {
+        const val = parseInt(inpTargetAngle.value);
+        if (val && val > 10 && val < 180) {
+            targetAngle = val;
+            angleControls.style.display = "none";
+            // Update Title
+            pageTitle.innerHTML = `Knee Flexion session: 10x 10sec ${targetAngle}&deg;`;
+        } else {
+            alert("Please enter a valid angle between 10 and 179.");
+        }
     });
 
     // Camera Button
@@ -311,8 +372,6 @@
                 if (angleBuffer.length > BUFFER_SIZE) angleBuffer.shift();
                 smoothAngle = Math.floor(angleBuffer.reduce((a, b) => a + b, 0) / angleBuffer.length);
 
-                if (smoothAngle > sessionMaxFlexion) sessionMaxFlexion = smoothAngle;
-
                 // Draw Lines
                 canvasCtx.lineWidth = 3;
                 canvasCtx.strokeStyle = "white";
@@ -329,12 +388,15 @@
 
                 // State Machine
                 if (state === "WAITING") {
-                    if (smoothAngle >= TARGET_ANGLE) {
+                    // Show large angle while waiting for rep to start
+                    drawBigText(`${smoothAngle}°`, w, h);
+
+                    if (smoothAngle >= targetAngle) {
                         state = "HOLDING";
                         timerStart = currTime;
                     }
                 } else if (state === "HOLDING") {
-                    if (smoothAngle < TARGET_ANGLE) {
+                    if (smoothAngle < targetAngle) {
                         state = "WAITING";
                     } else {
                         const elapsed = currTime - timerStart;
@@ -366,9 +428,12 @@
         canvasCtx.fillText(`STATUS: ${state}`, uiXOffset, 60);
 
         canvasCtx.font = "36px Arial";
-        canvasCtx.fillText(`LEG: ${currentLeg}`, uiXOffset, 100); // Added Leg Indicator
+        canvasCtx.fillText(`LEG: ${currentLeg}`, uiXOffset, 100);
         canvasCtx.fillText(`CURRENT FLEXION: ${smoothAngle} deg`, uiXOffset, 150);
-        canvasCtx.fillText(`SESSION MAX: ${sessionMaxFlexion} deg`, uiXOffset, 200);
+
+        // Replaced SESSION MAX with TARGET ANGLE
+        canvasCtx.fillText(`TARGET ANGLE: ${targetAngle} deg`, uiXOffset, 200);
+
         canvasCtx.fillText(`REPS: ${repsCompleted} / ${MAX_REPS}`, uiXOffset, 250);
 
         if (state === "FINISHED") {
@@ -386,14 +451,15 @@
         const uiXOffset = w + 40;
         const offset = Math.floor(h/2) + Math.floor(h/3);
         canvasCtx.fillStyle = TEXT_COLOR;
-        canvasCtx.font = "bold 50px Arial";
+        canvasCtx.font = "bold 70px Arial";
         canvasCtx.fillText(text, uiXOffset, offset);
     }
 
     // --- DOWNLOAD CSV ---
     downloadBtn.addEventListener('click', () => {
         const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
-        const csvContent = "data:text/csv;charset=utf-8,Timestamp,Leg,Max_Flexion_Reached\n" + `${timestamp},${currentLeg},${sessionMaxFlexion} deg`;
+        // Changed CSV header to store Target Angle instead of Max Flexion
+        const csvContent = "data:text/csv;charset=utf-8,Timestamp,Leg,Target_Angle\n" + `${timestamp},${currentLeg},${targetAngle} deg`;
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
         link.setAttribute("href", encodedUri);
