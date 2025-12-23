@@ -22,6 +22,8 @@
             border: 2px solid #555;
             background-color: #000;
             max-width: 100%;
+            /* Ensure it doesn't get too tall on mobile so controls are visible */
+            max-height: 80vh;
         }
 
         .controls {
@@ -238,7 +240,6 @@
             currentLeg = "RIGHT";
             toggleLegBtn.innerText = "Leg: Right";
         }
-        // Clear buffers so the skeleton doesn't jump across screen
         hipBuffer = [];
         kneeBuffer = [];
         ankleBuffer = [];
@@ -247,7 +248,6 @@
 
     // Angle Configuration
     setAngleBtn.addEventListener("click", () => {
-        // Toggle visibility of the input field
         if (angleControls.style.display === "none") {
             angleControls.style.display = "flex";
             inpTargetAngle.value = targetAngle;
@@ -262,7 +262,6 @@
         if (val && val > 10 && val < 180) {
             targetAngle = val;
             angleControls.style.display = "none";
-            // Update Title
             pageTitle.innerHTML = `Knee Flexion session: 10x 10sec ${targetAngle}&deg;`;
         } else {
             alert("Please enter a valid angle between 10 and 179.");
@@ -306,52 +305,81 @@
     async function predictWebcam() {
         if (!webcamRunning) return;
 
-        if(canvasElement.width !== video.videoWidth * 2) {
-            canvasElement.width = video.videoWidth * 2;
-            canvasElement.height = video.videoHeight;
+        // Check if layout needs to change based on window size (Mobile Portrait vs Desktop)
+        // We do this check every frame or we could listen to resize events.
+        // Doing it here ensures the canvas is always the right shape.
+        const isPortrait = window.innerHeight > window.innerWidth;
+        const vidW = video.videoWidth;
+        const vidH = video.videoHeight;
+
+        let targetCanvasW, targetCanvasH;
+
+        if (isPortrait) {
+            // Stacked: Video Top, UI Bottom
+            targetCanvasW = vidW;
+            targetCanvasH = vidH * 2;
+        } else {
+            // Side-by-side: Video Left, UI Right
+            targetCanvasW = vidW * 2;
+            targetCanvasH = vidH;
         }
 
-        const w = video.videoWidth;
-        const h = video.videoHeight;
+        if(canvasElement.width !== targetCanvasW || canvasElement.height !== targetCanvasH) {
+            canvasElement.width = targetCanvasW;
+            canvasElement.height = targetCanvasH;
+        }
+
         let startTimeMs = performance.now();
 
         if (lastVideoTime !== video.currentTime) {
             lastVideoTime = video.currentTime;
             poseLandmarker.detectForVideo(video, startTimeMs, (result) => {
-                processFrame(result, w, h);
+                processFrame(result, vidW, vidH, isPortrait);
             });
         }
 
         window.requestAnimationFrame(predictWebcam);
     }
 
-    function processFrame(result, w, h) {
+    function processFrame(result, w, h, isPortrait) {
         const currTime = Date.now() / 1000;
 
         // 1. Draw Background
         canvasCtx.save();
         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
 
-        // Mirror Video (Left side)
+        // -- DRAW VIDEO --
+        // In both layouts, video is at 0,0
         canvasCtx.translate(w, 0);
         canvasCtx.scale(-1, 1);
         if(video.srcObject) canvasCtx.drawImage(video, 0, 0, w, h);
         canvasCtx.restore();
 
-        // UI Grey (Right side)
+        // -- DRAW UI BACKGROUND --
         canvasCtx.fillStyle = UI_BG_COLOR;
-        canvasCtx.fillRect(w, 0, w, h);
+        let uiStartX, uiStartY;
+
+        if (isPortrait) {
+            // UI goes below video
+            uiStartX = 0;
+            uiStartY = h;
+            canvasCtx.fillRect(0, h, w, h);
+        } else {
+            // UI goes to the right of video
+            uiStartX = w;
+            uiStartY = 0;
+            canvasCtx.fillRect(w, 0, w, h);
+        }
 
         let smoothAngle = 0;
 
         // 2. Logic & Skeleton
         if (result.landmarks && result.landmarks.length > 0) {
             const lm = result.landmarks[0];
-
-            // Get Current Leg Indices
             const idx = LEG_INDICES[currentLeg];
 
             // Calc coords (Flipping X for mirror effect)
+            // Video is always drawn at 0,0 so these coords are valid for the video region
             const rawHip = { x: (1 - lm[idx.hip].x) * w, y: lm[idx.hip].y * h };
             const rawKnee = { x: (1 - lm[idx.knee].x) * w, y: lm[idx.knee].y * h };
             const rawAnkle = { x: (1 - lm[idx.ankle].x) * w, y: lm[idx.ankle].y * h };
@@ -364,7 +392,6 @@
             const sKnee = getAveragePoint(kneeBuffer);
             const sAnkle = getAveragePoint(ankleBuffer);
 
-            // Only proceed if we have enough data to smooth
             if (sHip && sKnee && sAnkle) {
                 const currentAngle = calculateFlexion(sHip, sKnee, sAnkle);
 
@@ -372,7 +399,7 @@
                 if (angleBuffer.length > BUFFER_SIZE) angleBuffer.shift();
                 smoothAngle = Math.floor(angleBuffer.reduce((a, b) => a + b, 0) / angleBuffer.length);
 
-                // Draw Lines
+                // Draw Lines on the video part
                 canvasCtx.lineWidth = 3;
                 canvasCtx.strokeStyle = "white";
                 canvasCtx.beginPath();
@@ -388,9 +415,7 @@
 
                 // State Machine
                 if (state === "WAITING") {
-                    // Show large angle while waiting for rep to start
-                    drawBigText(`${smoothAngle}°`, w, h);
-
+                    drawBigText(`${smoothAngle}°`, uiStartX, uiStartY, w, h);
                     if (smoothAngle >= targetAngle) {
                         state = "HOLDING";
                         timerStart = currTime;
@@ -401,7 +426,7 @@
                     } else {
                         const elapsed = currTime - timerStart;
                         const remaining = Math.max(0, HOLD_DURATION - Math.floor(elapsed));
-                        drawBigText(`HOLD: ${remaining}s`, w, h);
+                        drawBigText(`HOLD: ${remaining}s`, uiStartX, uiStartY, w, h);
                         if (elapsed >= HOLD_DURATION) {
                             repsCompleted++;
                             if (repsCompleted >= MAX_REPS) {
@@ -415,31 +440,33 @@
                 } else if (state === "RESTING") {
                     const elapsed = currTime - timerStart;
                     const remaining = Math.max(0, REST_DURATION - Math.floor(elapsed));
-                    drawBigText(`REST: ${remaining}s`, w, h);
+                    drawBigText(`REST: ${remaining}s`, uiStartX, uiStartY, w, h);
                     if (elapsed >= REST_DURATION) state = "WAITING";
                 }
             }
         }
 
         // 3. UI Text
-        const uiXOffset = w + 40;
+        // Define padding for text
+        const textX = uiStartX + 40;
+        const textYStart = uiStartY + 60;
+        const lineHeight = 50;
+
         canvasCtx.fillStyle = TEXT_COLOR;
         canvasCtx.font = "bold 40px Arial";
-        canvasCtx.fillText(`STATUS: ${state}`, uiXOffset, 60);
+        canvasCtx.fillText(`STATUS: ${state}`, textX, textYStart);
 
         canvasCtx.font = "36px Arial";
-        canvasCtx.fillText(`LEG: ${currentLeg}`, uiXOffset, 100);
-        canvasCtx.fillText(`CURRENT FLEXION: ${smoothAngle} deg`, uiXOffset, 150);
-
-        // Replaced SESSION MAX with TARGET ANGLE
-        canvasCtx.fillText(`TARGET ANGLE: ${targetAngle} deg`, uiXOffset, 200);
-
-        canvasCtx.fillText(`REPS: ${repsCompleted} / ${MAX_REPS}`, uiXOffset, 250);
+        canvasCtx.fillText(`LEG: ${currentLeg}`, textX, textYStart + lineHeight);
+        canvasCtx.fillText(`CURRENT FLEXION: ${smoothAngle} deg`, textX, textYStart + lineHeight*2);
+        canvasCtx.fillText(`TARGET ANGLE: ${targetAngle} deg`, textX, textYStart + lineHeight*3);
+        canvasCtx.fillText(`REPS: ${repsCompleted} / ${MAX_REPS}`, textX, textYStart + lineHeight*4);
 
         if (state === "FINISHED") {
             canvasCtx.fillStyle = "#FFFFFF";
             canvasCtx.font = "bold 40px Arial";
-            canvasCtx.fillText("SESSION COMPLETE", uiXOffset, h / 2 + 80);
+            // Centered in UI box
+            canvasCtx.fillText("SESSION COMPLETE", textX, uiStartY + h/2 + 40);
             if (!sessionLogged) {
                 sessionLogged = true;
                 downloadBtn.style.display = "block";
@@ -447,18 +474,21 @@
         }
     }
 
-    function drawBigText(text, w, h) {
-        const uiXOffset = w + 40;
-        const offset = Math.floor(h/2) + Math.floor(h/3);
+    function drawBigText(text, uiStartX, uiStartY, w, h) {
+        // Center the big text in the UI panel
+        const centerX = uiStartX + (w / 2);
+        const centerY = uiStartY + (h * 0.75); // Place it in the bottom/lower half of the UI panel
+
         canvasCtx.fillStyle = TEXT_COLOR;
         canvasCtx.font = "bold 70px Arial";
-        canvasCtx.fillText(text, uiXOffset, offset);
+        canvasCtx.textAlign = "center";
+        canvasCtx.fillText(text, centerX, centerY);
+        canvasCtx.textAlign = "start"; // Reset alignment
     }
 
     // --- DOWNLOAD CSV ---
     downloadBtn.addEventListener('click', () => {
         const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
-        // Changed CSV header to store Target Angle instead of Max Flexion
         const csvContent = "data:text/csv;charset=utf-8,Timestamp,Leg,Target_Angle\n" + `${timestamp},${currentLeg},${targetAngle} deg`;
         const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
