@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knee Flexion Time Attack</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #222;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+        /* Hide the raw video, we render to canvas */
+        video { display: none; }
+
+        canvas {
+            border: 2px solid #555;
+            background-color: #000;
+            max-width: 100%;
+            max-height: 80vh;
+        }
+
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            transition: background 0.2s;
+        }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+
+        /* Specific Button Colors */
+        button#btn-start { min-width: 150px; }
+        button#btn-download { background-color: #28a745; display: none; }
+        button#btn-toggle-leg { background-color: #17a2b8; }
+        button#btn-set-angle { background-color: #6610f2; }
+
+        /* Input styling */
+        #angle-controls {
+            align-items: center;
+            background: #333;
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+        #inp-target-angle {
+            font-size: 16px;
+            padding: 5px;
+            width: 70px;
+            border-radius: 3px;
+            border: 1px solid #555;
+            margin: 0 10px;
+            text-align: center;
+        }
+
+        #status-loading {
+            margin-bottom: 10px;
+            padding: 10px;
+            background: #333;
+            border-radius: 4px;
+            border: 1px solid #444;
+        }
+
+        /* --- GAME UI ELEMENTS --- */
+        
+        /* The Time Bar Container */
+        #time-bar-container {
+            width: 100%;
+            max-width: 640px;
+            height: 30px;
+            background-color: #444;
+            border-radius: 15px;
+            margin-bottom: 10px;
+            overflow: hidden;
+            position: relative;
+            border: 2px solid #fff;
+        }
+
+        /* The Filling Bar */
+        #time-bar-fill {
+            height: 100%;
+            width: 100%; /* Starts full */
+            background: linear-gradient(90deg, #ff3333, #ffff33, #33ff33);
+            transition: width 0.1s linear;
+        }
+
+        /* Text over the bar */
+        #time-bar-text {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            line-height: 30px;
+            font-weight: bold;
+            color: black;
+            top: 0;
+            left: 0;
+            text-shadow: 0px 0px 5px white;
+        }
+
+        /* Overlays (Ad / Victory) */
+        .overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.95);
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            text-align: center;
+        }
+
+        .overlay h1 { font-size: 40px; margin-bottom: 20px; }
+        
+        #overlay-ad { border: 10px solid red; }
+        #overlay-kitten { border: 10px solid gold; }
+        
+        #btn-continue-ad {
+            background-color: #ff3333;
+            font-size: 24px;
+            padding: 20px 40px;
+            margin-top: 20px;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+    </style>
+</head>
+<body>
+
+    <h1 id="page-title">Time Attack: 10x 90&deg;</h1>
+    <div id="status-loading">Loading AI Model... </div>
+
+    <!-- GAME TIMER BAR -->
+    <div id="time-bar-container">
+        <div id="time-bar-fill"></div>
+        <div id="time-bar-text">Time Bank: 20s</div>
+    </div>
+
+    <div style="position: relative;">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <!-- Main Controls -->
+    <div class="controls">
+        <button id="btn-start" disabled>Start Camera</button>
+        <button id="btn-toggle-leg">Leg: Left</button>
+        <button id="btn-set-angle">Target Angle</button>
+        <button id="btn-download">Download Log</button>
+    </div>
+
+    <!-- Hidden Angle Input -->
+    <div id="angle-controls" style="display: none;">
+        <label for="inp-target-angle">Target Angle (&deg;):</label>
+        <input type="number" id="inp-target-angle" value="90" min="10" max="175">
+        <button id="btn-confirm-angle" style="background-color: #28a745; padding: 5px 15px;">OK</button>
+    </div>
+
+    <!-- ADVERTISEMENT OVERLAY -->
+    <div id="overlay-ad" class="overlay">
+        <h1 style="color: red;">OUT OF TIME!</h1>
+        <div style="background: white; color: black; padding: 40px; max-width: 80%; border-radius: 10px;">
+            <h2>ADVERTISEMENT</h2>
+            <p>Imagine a very persuasive video playing here...</p>
+        </div>
+        <button id="btn-continue-ad">WATCH AD TO CONTINUE (+15s)</button>
+    </div>
+
+    <!-- KITTEN VICTORY OVERLAY -->
+    <div id="overlay-kitten" class="overlay">
+        <h1 style="color: gold;">SESSION COMPLETE!</h1>
+        <img src="https://images.pexels.com/photos/45201/kitty-cat-kitten-pet-45201.jpeg?auto=compress&cs=tinysrgb&w=400" alt="Cute Kitten" style="border-radius: 20px; border: 5px solid white;">
+        <p style="font-size: 20px; margin-top: 20px;">Great job! You beat the clock.</p>
+        <button onclick="location.reload()" style="margin-top: 20px; background-color: gold; color: black;">Play Again</button>
+    </div>
+
+<script type="module">
+    import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+    // --- CONFIGURATION ---
+    const BUFFER_SIZE = 3;
+    let targetAngle = 90; 
+    const HOLD_DURATION = 10;
+    const REST_DURATION = 2; // Short rest for fast gameplay
+    const MAX_REPS = 10;
+
+    // GAME SETTINGS
+    const INITIAL_TIME_BANK = 20; // Seconds you start with
+    const MAX_TIME_BANK = 60;     // Max seconds you can hoard
+    const TIME_DRAIN_RATE = 1;    // Seconds lost per second while waiting
+    const TIME_GAIN_RATE = 1.0;   // Seconds gained per second while holding (Bonus!)
+
+    const UI_BG_COLOR = "#808080";
+    const TEXT_COLOR = "#FFFFFF";
+
+    const LEG_INDICES = {
+        LEFT: { hip: 23, knee: 25, ankle: 27 },
+        RIGHT:  { hip: 24, knee: 26, ankle: 28 }
+    };
+
+    // --- STATE VARIABLES ---
+    let poseLandmarker = undefined;
+    let webcamRunning = false;
+    let lastVideoTime = -1;
+    let state = "WAITING";
+    let repsCompleted = 0;
+    let timerStart = 0;
+    let sessionLogged = false;
+    let currentLeg = "LEFT"; 
+
+    // GAME STATE
+    let timeBank = INITIAL_TIME_BANK;
+    let lastFrameTimestamp = 0;
+    let gameActive = false; // Game starts when camera starts
+
+    // Buffers
+    let hipBuffer = [];
+    let kneeBuffer = [];
+    let ankleBuffer = [];
+    let angleBuffer = [];
+
+    // DOM Elements
+    const video = document.getElementById("webcam");
+    const canvasElement = document.getElementById("output_canvas");
+    const canvasCtx = canvasElement.getContext("2d");
+    const startBtn = document.getElementById("btn-start");
+    const toggleLegBtn = document.getElementById("btn-toggle-leg");
+    const downloadBtn = document.getElementById("btn-download");
+    const loadingMsg = document.getElementById("status-loading");
+    const pageTitle = document.getElementById("page-title");
+    
+    // UI Elements
+    const timeBarFill = document.getElementById("time-bar-fill");
+    const timeBarText = document.getElementById("time-bar-text");
+    const overlayAd = document.getElementById("overlay-ad");
+    const overlayKitten = document.getElementById("overlay-kitten");
+    const btnContinueAd = document.getElementById("btn-continue-ad");
+
+    // Angle Inputs
+    const setAngleBtn = document.getElementById("btn-set-angle");
+    const angleControls = document.getElementById("angle-controls");
+    const inpTargetAngle = document.getElementById("inp-target-angle");
+    const confirmAngleBtn = document.getElementById("btn-confirm-angle");
+
+    // --- SETUP MEDIAPIPE ---
+    const createPoseLandmarker = async () => {
+        try {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+            );
+            poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task`,
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numPoses: 1
+            });
+            loadingMsg.style.display = "none";
+            startBtn.disabled = false;
+            console.log("Model loaded");
+        } catch (error) {
+            console.error(error);
+            loadingMsg.textContent = "Error: " + error.message;
+            loadingMsg.className = "error";
+        }
+    };
+    createPoseLandmarker();
+
+    // --- MATH HELPERS ---
+    function calculateFlexion(a, b, c) {
+        let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+        let angle = Math.abs(radians * 180.0 / Math.PI);
+        if (angle > 180.0) angle = 360 - angle;
+        return Math.floor(Math.abs(180 - angle));
+    }
+
+    function getAveragePoint(buffer) {
+        if (buffer.length === 0) return null;
+        let sumX = 0, sumY = 0;
+        for (let p of buffer) { sumX += p.x; sumY += p.y; }
+        return { x: sumX / buffer.length, y: sumY / buffer.length };
+    }
+
+    function updateBuffer(buffer, point) {
+        buffer.push(point);
+        if (buffer.length > BUFFER_SIZE) buffer.shift();
+    }
+
+    // --- CONTROLS ---
+
+    toggleLegBtn.addEventListener("click", () => {
+        if (currentLeg === "RIGHT") { currentLeg = "LEFT"; toggleLegBtn.innerText = "Leg: Left"; } 
+        else { currentLeg = "RIGHT"; toggleLegBtn.innerText = "Leg: Right"; }
+        hipBuffer = []; kneeBuffer = []; ankleBuffer = []; angleBuffer = [];
+    });
+
+    setAngleBtn.addEventListener("click", () => {
+        angleControls.style.display = (angleControls.style.display === "none") ? "flex" : "none";
+        if(angleControls.style.display === "flex") inpTargetAngle.value = targetAngle;
+    });
+
+    confirmAngleBtn.addEventListener("click", () => {
+        const val = parseInt(inpTargetAngle.value);
+        if (val && val > 10 && val < 180) {
+            targetAngle = val;
+            angleControls.style.display = "none";
+            pageTitle.innerHTML = `Time Attack: 10x ${targetAngle}&deg;`;
+        }
+    });
+
+    // --- GAME LOGIC : AD CONTINUE ---
+    btnContinueAd.addEventListener("click", () => {
+        // "Watch" the ad (simulate delay or just instant for now)
+        overlayAd.style.display = "none";
+        // Penalty/Reward logic
+        timeBank = 15; // Give them a fighting chance
+        updateTimeBar();
+        gameActive = true; // Resume
+        lastFrameTimestamp = Date.now(); // Reset delta
+    });
+
+
+    function enableCam(event) {
+        if (!poseLandmarker) return;
+
+        if (webcamRunning === true) {
+            webcamRunning = false;
+            gameActive = false;
+            startBtn.innerText = "Start Camera";
+            startBtn.style.backgroundColor = "#007bff";
+            if(video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+        } else {
+            webcamRunning = true;
+            gameActive = true; // START THE GAME
+            lastFrameTimestamp = Date.now();
+            timeBank = INITIAL_TIME_BANK; // Reset Time
+            repsCompleted = 0;
+            state = "WAITING";
+
+            startBtn.innerText = "Stop Camera";
+            startBtn.style.backgroundColor = "#dc3545";
+
+            const constraints = { video: { width: 640, height: 480 } };
+
+            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+            }).catch((err) => {
+                console.error(err);
+                alert("Camera denied.");
+                webcamRunning = false;
+            });
+        }
+    }
+    startBtn.addEventListener("click", enableCam);
+
+    // --- TIME UPDATE LOOP ---
+    function updateGameLogic() {
+        if (!gameActive || state === "FINISHED") return;
+
+        const now = Date.now();
+        const deltaSeconds = (now - lastFrameTimestamp) / 1000;
+        lastFrameTimestamp = now;
+
+        if (state === "HOLDING") {
+            // GAIN TIME
+            timeBank += (deltaSeconds * TIME_GAIN_RATE);
+        } else {
+            // DRAIN TIME (Waiting or Resting)
+            timeBank -= (deltaSeconds * TIME_DRAIN_RATE);
+        }
+
+        // Clamp
+        if (timeBank > MAX_TIME_BANK) timeBank = MAX_TIME_BANK;
+        
+        // CHECK FAILURE
+        if (timeBank <= 0) {
+            timeBank = 0;
+            triggerAd();
+        }
+
+        updateTimeBar();
+    }
+
+    function triggerAd() {
+        gameActive = false; // Pause logic
+        overlayAd.style.display = "flex";
+    }
+
+    function updateTimeBar() {
+        const pct = (timeBank / MAX_TIME_BANK) * 100;
+        timeBarFill.style.width = `${pct}%`;
+        timeBarText.innerText = `Time Bank: ${Math.ceil(timeBank)}s`;
+        
+        // Color changes
+        if(timeBank < 10) timeBarFill.style.background = "red";
+        else if (timeBank < 30) timeBarFill.style.background = "orange";
+        else timeBarFill.style.background = "#33ff33";
+    }
+
+
+    // --- MAIN LOOP ---
+    async function predictWebcam() {
+        if (!webcamRunning) return;
+
+        // Responsive Canvas
+        const isPortrait = window.innerHeight > window.innerWidth;
+        const vidW = video.videoWidth;
+        const vidH = video.videoHeight;
+        let targetCanvasW, targetCanvasH;
+        
+        if (isPortrait) { targetCanvasW = vidW; targetCanvasH = vidH * 2; } 
+        else { targetCanvasW = vidW * 2; targetCanvasH = vidH; }
+
+        if(canvasElement.width !== targetCanvasW || canvasElement.height !== targetCanvasH) {
+            canvasElement.width = targetCanvasW;
+            canvasElement.height = targetCanvasH;
+        }
+
+        // Run Logic
+        updateGameLogic();
+
+        let startTimeMs = performance.now();
+        if (lastVideoTime !== video.currentTime) {
+            lastVideoTime = video.currentTime;
+            poseLandmarker.detectForVideo(video, startTimeMs, (result) => {
+                processFrame(result, vidW, vidH, isPortrait);
+            });
+        }
+
+        window.requestAnimationFrame(predictWebcam);
+    }
+
+    function processFrame(result, w, h, isPortrait) {
+        const currTime = Date.now() / 1000;
+
+        // Draw Setup
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.translate(w, 0);
+        canvasCtx.scale(-1, 1);
+        if(video.srcObject) canvasCtx.drawImage(video, 0, 0, w, h);
+        canvasCtx.restore();
+
+        // UI BG
+        canvasCtx.fillStyle = UI_BG_COLOR;
+        let uiStartX, uiStartY;
+        if (isPortrait) { uiStartX = 0; uiStartY = h; canvasCtx.fillRect(0, h, w, h); } 
+        else { uiStartX = w; uiStartY = 0; canvasCtx.fillRect(w, 0, w, h); }
+
+        let smoothAngle = 0;
+
+        // Skeleton & Logic
+        if (result.landmarks && result.landmarks.length > 0) {
+            const lm = result.landmarks[0];
+            const idx = LEG_INDICES[currentLeg];
+
+            const rawHip = { x: (1 - lm[idx.hip].x) * w, y: lm[idx.hip].y * h };
+            const rawKnee = { x: (1 - lm[idx.knee].x) * w, y: lm[idx.knee].y * h };
+            const rawAnkle = { x: (1 - lm[idx.ankle].x) * w, y: lm[idx.ankle].y * h };
+
+            updateBuffer(hipBuffer, rawHip);
+            updateBuffer(kneeBuffer, rawKnee);
+            updateBuffer(ankleBuffer, rawAnkle);
+
+            const sHip = getAveragePoint(hipBuffer);
+            const sKnee = getAveragePoint(kneeBuffer);
+            const sAnkle = getAveragePoint(ankleBuffer);
+
+            if (sHip && sKnee && sAnkle) {
+                const currentAngle = calculateFlexion(sHip, sKnee, sAnkle);
+                angleBuffer.push(currentAngle);
+                if (angleBuffer.length > BUFFER_SIZE) angleBuffer.shift();
+                smoothAngle = Math.floor(angleBuffer.reduce((a, b) => a + b, 0) / angleBuffer.length);
+
+                // Draw
+                canvasCtx.lineWidth = 3;
+                canvasCtx.strokeStyle = "white";
+                canvasCtx.beginPath();
+                canvasCtx.moveTo(sHip.x, sHip.y);
+                canvasCtx.lineTo(sKnee.x, sKnee.y);
+                canvasCtx.lineTo(sAnkle.x, sAnkle.y);
+                canvasCtx.stroke();
+                canvasCtx.fillStyle = "#00FF00";
+                canvasCtx.beginPath();
+                canvasCtx.arc(sKnee.x, sKnee.y, 8, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+                // STATE MACHINE
+                if (!gameActive) {
+                     // Do nothing if ad is showing
+                } else if (state === "WAITING") {
+                    drawBigText(`${smoothAngle}°`, uiStartX, uiStartY, w, h);
+                    if (smoothAngle >= targetAngle) {
+                        state = "HOLDING";
+                        timerStart = currTime;
+                    }
+                } else if (state === "HOLDING") {
+                    if (smoothAngle < targetAngle) {
+                        state = "WAITING";
+                    } else {
+                        const elapsed = currTime - timerStart;
+                        const remaining = Math.max(0, HOLD_DURATION - Math.floor(elapsed));
+                        drawBigText(`HOLD: ${remaining}s`, uiStartX, uiStartY, w, h);
+                        
+                        // Add floating "+TIME" text effect
+                        canvasCtx.fillStyle = "#00FF00";
+                        canvasCtx.font = "bold 20px Arial";
+                        canvasCtx.fillText("+TIME", sKnee.x, sKnee.y - 30);
+
+                        if (elapsed >= HOLD_DURATION) {
+                            repsCompleted++;
+                            if (repsCompleted >= MAX_REPS) {
+                                state = "FINISHED";
+                                overlayKitten.style.display = "flex";
+                                gameActive = false; // Stop timer
+                            } else {
+                                state = "RESTING";
+                                timerStart = currTime;
+                            }
+                        }
+                    }
+                } else if (state === "RESTING") {
+                    const elapsed = currTime - timerStart;
+                    const remaining = Math.max(0, REST_DURATION - Math.floor(elapsed));
+                    drawBigText(`REST: ${remaining}s`, uiStartX, uiStartY, w, h);
+                    if (elapsed >= REST_DURATION) state = "WAITING";
+                }
+            }
+        }
+
+        // TEXT UI
+        const textX = uiStartX + 40;
+        const textYStart = uiStartY + 60;
+        const lineHeight = 50;
+
+        canvasCtx.fillStyle = TEXT_COLOR;
+        canvasCtx.font = "bold 40px Arial";
+        canvasCtx.textAlign = "start";
+        canvasCtx.fillText(`STATUS: ${state}`, textX, textYStart);
+        canvasCtx.font = "36px Arial";
+        canvasCtx.fillText(`LEG: ${currentLeg}`, textX, textYStart + lineHeight); 
+        canvasCtx.fillText(`CURRENT: ${smoothAngle}°`, textX, textYStart + lineHeight*2);
+        canvasCtx.fillText(`TARGET: ${targetAngle}°`, textX, textYStart + lineHeight*3);
+        canvasCtx.fillText(`REPS: ${repsCompleted} / ${MAX_REPS}`, textX, textYStart + lineHeight*4);
+
+        if (state === "FINISHED") {
+            canvasCtx.fillStyle = "#FFFFFF";
+            canvasCtx.font = "bold 40px Arial";
+            canvasCtx.textAlign = "center";
+            canvasCtx.fillText("YOU WON!", uiStartX + w/2, uiStartY + h/2 + 40);
+        }
+    }
+
+    function drawBigText(text, uiStartX, uiStartY, w, h) {
+        const centerX = uiStartX + (w / 2);
+        const centerY = uiStartY + (h * 0.75); 
+        canvasCtx.fillStyle = TEXT_COLOR;
+        canvasCtx.font = "bold 70px Arial";
+        canvasCtx.textAlign = "center";
+        canvasCtx.fillText(text, centerX, centerY);
+        canvasCtx.textAlign = "start"; 
+    }
+
+    downloadBtn.addEventListener('click', () => {
+        const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const csvContent = "data:text/csv;charset=utf-8,Timestamp,Leg,Target_Angle,Result\n" + `${timestamp},${currentLeg},${targetAngle} deg, Success`;
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "knee_session_log.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    });
+</script>
+</body>
+</html>
